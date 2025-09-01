@@ -18,6 +18,13 @@
     );
   }
 
+  async function postSubmission(payload) {
+  chrome.runtime.sendMessage({ type: "LC2GH_SUBMIT", payload }, (resp) => {
+    console.log("[LC2GH] submit via background:", resp);
+  });
+}
+
+
   async function handlePayload(p) {
     const text = document.body?.innerText || '';
     const runtimeMatch = text.match(/Runtime:\s*([0-9.]+\s*ms)/i);
@@ -55,6 +62,9 @@
     chrome.runtime.sendMessage({ type: "LC2GH_DOWNLOAD", payload }, (resp) => {
       log("background responded:", resp);
     });
+
+    postSubmission(payload);
+
   }
 
   // Detect Accepted
