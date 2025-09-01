@@ -1,11 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "LC2GH — LeetCode Grabber (no-backend MVP)",
-  "version": "0.0.2",
-  "description": "On Accepted, capture code + metadata (title/slug/lang/runtime/memory) and download JSON/MD.",
-  "permissions": ["storage", "activeTab", "downloads"],
-  "host_permissions": ["https://leetcode.com/*", "https://leetcode.cn/*"],
-  "background": { "service_worker": "background.js" },
+  "name": "LC2GH",
+  "version": "0.1.0",
+  "permissions": ["storage", "identity", "downloads"],
+  "host_permissions": [
+    "https://leetcode.com/*",
+    "https://leetcode.cn/*",
+    "http://localhost:8787/*"
+  ],
+  "action": { "default_popup": "popup.html" },
+  "web_accessible_resources": [
+    {
+      "resources": ["injected-bridge.js"],
+      "matches": ["https://leetcode.com/*", "https://leetcode.cn/*"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": ["https://leetcode.com/*", "https://leetcode.cn/*"],
@@ -13,10 +22,8 @@
       "run_at": "document_end"
     }
   ],
-  "web_accessible_resources": [
-    {
-      "resources": ["injected-bridge.js"],
-      "matches": ["https://leetcode.com/*", "https://leetcode.cn/*"]
-    }
-  ]
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
 }
