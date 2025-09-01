@@ -1,4 +1,5 @@
-// background.js — MV3-safe downloads via data URLs (no createObjectURL)
+// background.js — MV3 service worker
+
 const log = (...a) => console.log("[LC2GH/bg]", ...a);
 
 // helper: UTF-8 → base64 (handles Unicode safely)
@@ -7,26 +8,58 @@ function b64(str) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.type !== "LC2GH_DOWNLOAD") return;
+  if (!msg || !msg.type) return; // ignore
 
-  try {
-    const p = msg.payload;
-    log("download request from tab", sender.tab?.id, p?.slug);
+  // ---- Upload to backend from extension context ----
+  if (msg.type === "LC2GH_SUBMIT") {
+    (async () => {
+      try {
+        const { jwt, apiBase } = await chrome.storage.local.get(["jwt", "apiBase"]);
+        if (!jwt || !apiBase) {
+          return sendResponse({ ok: false, error: "no auth in storage" });
+        }
 
-    // 1) JSON
-    const json = JSON.stringify(p, null, 2);
-    const jsonDataUrl = `data:application/json;base64,${b64(json)}`;
-    chrome.downloads.download(
-      {
-        url: jsonDataUrl,
-        filename: `lc2gh-${p.slug}-${Date.now()}.json`,
-        saveAs: false
-      },
-      (id) => log("json download id:", id)
-    );
+        const idem =
+          (self.crypto && self.crypto.randomUUID && self.crypto.randomUUID()) ||
+          (Date.now() + ":" + Math.random());
 
-    // 2) Markdown
-    const md = `# ${p.title}
+        const res = await fetch(`${apiBase}/v1/submissions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${jwt}`,
+            "Idempotency-Key": idem
+          },
+          body: JSON.stringify(msg.payload || {})
+        });
+
+        let data = {};
+        try { data = await res.json(); } catch {}
+        sendResponse({ ok: res.ok, status: res.status, data });
+      } catch (e) {
+        console.error("[LC2GH/bg] submit error:", e);
+        sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // keep channel open for async sendResponse
+  }
+
+  // ---- Existing debug downloads path (kept) ----
+  if (msg.type === "LC2GH_DOWNLOAD") {
+    try {
+      const p = msg.payload;
+      log("download request from tab", sender.tab?.id, p?.slug);
+
+      // 1) JSON
+      const json = JSON.stringify(p, null, 2);
+      const jsonDataUrl = `data:application/json;base64,${b64(json)}`;
+      chrome.downloads.download(
+        { url: jsonDataUrl, filename: `lc2gh-${p.slug}-${Date.now()}.json`, saveAs: false },
+        (id) => log("json download id:", id)
+      );
+
+      // 2) Markdown
+      const md = `# ${p.title}
 - **Slug:** ${p.slug}
 - **Difficulty:** ${p.difficulty || '—'}
 - **Language:** ${p.language || '—'}
@@ -39,22 +72,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 ${(p.code || "").slice(0, 120000)}
 \`\`\`
 `;
-    const mdDataUrl = `data:text/markdown;base64,${b64(md)}`;
-    chrome.downloads.download(
-      {
-        url: mdDataUrl,
-        filename: `lc2gh-${p.slug}-${Date.now()}.md`,
-        saveAs: false
-      },
-      (id) => log("md download id:", id)
-    );
+      const mdDataUrl = `data:text/markdown;base64,${b64(md)}`;
+      chrome.downloads.download(
+        { url: mdDataUrl, filename: `lc2gh-${p.slug}-${Date.now()}.md`, saveAs: false },
+        (id) => log("md download id:", id)
+      );
 
-    sendResponse({ ok: true });
-  } catch (e) {
-    console.error("[LC2GH/bg] download error:", e);
-    sendResponse({ ok: false, error: String(e) });
+      sendResponse({ ok: true });
+    } catch (e) {
+      console.error("[LC2GH/bg] download error:", e);
+      sendResponse({ ok: false, error: String(e) });
+    }
+    return true;
   }
-
-  // return true to keep the message channel open until sendResponse runs
-  return true;
 });
