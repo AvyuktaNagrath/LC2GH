@@ -44,6 +44,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // keep channel open for async sendResponse
   }
 
+    // ---- NEW: status lookup for a given slug (minimal) ----
+  if (msg.type === "LC2GH_STATUS") {
+    (async () => {
+      try {
+        const slug = (msg.slug || "").trim();
+        if (!slug) return sendResponse({ ok: false, error: "missing slug" });
+
+        const { jwt, apiBase } = await chrome.storage.local.get(["jwt", "apiBase"]);
+        if (!jwt || !apiBase) {
+          return sendResponse({ ok: false, error: "no auth in storage" });
+        }
+
+        const url = `${apiBase}/v1/submissions/status?slug=${encodeURIComponent(slug)}`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
+
+        let data = {};
+        try { data = await res.json(); } catch {}
+        sendResponse({ ok: res.ok, status: res.status, data });
+      } catch (e) {
+        console.error("[LC2GH/bg] status error:", e);
+        sendResponse({ ok: false, error: String(e) });
+      }
+    })();
+    return true; // keep channel open for async sendResponse
+  }
+
+
   // ---- Existing debug downloads path (kept) ----
   if (msg.type === "LC2GH_DOWNLOAD") {
     try {
