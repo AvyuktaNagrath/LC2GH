@@ -17,6 +17,7 @@
   let statusSpan = null;
   let linkEl = null;
   let submitBtn = null;
+  let spinnerEl = null;
 
   // Track current status of this slug so we can switch button behavior
   let currentExists = false;
@@ -36,8 +37,27 @@
     );
   }
 
+  function ensureSpinnerStyles() {
+    if (document.getElementById('lc2gh-spinner-style')) return;
+    const style = document.createElement('style');
+    style.id = 'lc2gh-spinner-style';
+    style.textContent = `
+      @keyframes lc2gh-spin { to { transform: rotate(360deg); } }
+      .lc2gh-spinner {
+        width: 12px; height: 12px; border-radius: 50%;
+        border: 2px solid rgba(255,255,255,0.2);
+        border-top-color: #8ab4ff;
+        animation: lc2gh-spin 0.8s linear infinite;
+        display: none;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
   function ensureToast() {
     if (toastEl) return toastEl;
+    ensureSpinnerStyles();
+
     toastEl = document.createElement('div');
     Object.assign(toastEl.style, {
       position: 'fixed', right: '16px', bottom: '16px', zIndex: 999999,
@@ -51,6 +71,10 @@
     row.style.display = 'flex';
     row.style.alignItems = 'center';
     row.style.gap = '8px';
+
+    // Spinner (hidden by default)
+    spinnerEl = document.createElement('div');
+    spinnerEl.className = 'lc2gh-spinner';
 
     statusSpan = document.createElement('span');
     statusSpan.textContent = 'LC2GH: …';
@@ -97,12 +121,22 @@
       window.postMessage({ __LC_PULL_EDITOR__: true, __LC_MANUAL__: true }, '*');
     });
 
+    row.appendChild(spinnerEl);
     row.appendChild(statusSpan);
     row.appendChild(linkEl);
     row.appendChild(submitBtn);
     toastEl.appendChild(row);
     (document.body || document.documentElement).appendChild(toastEl);
     return toastEl;
+  }
+
+  function setLoading(on, label) {
+    ensureToast();
+    spinnerEl.style.display = on ? 'inline-block' : 'none';
+    if (label) statusSpan.textContent = `LC2GH: ${label}`;
+    submitBtn.disabled = !!on;
+    submitBtn.style.opacity = on ? '0.6' : '1';
+    submitBtn.style.cursor = on ? 'not-allowed' : 'pointer';
   }
 
   function renderStatus({ exists, html_file }) {
@@ -128,13 +162,18 @@
   function queryStatusForCurrentSlug() {
     const slug = getSlugFromPath();
     if (!slug) return;
+    setLoading(true, 'Checking…');
     chrome.runtime.sendMessage({ type: "LC2GH_STATUS", slug }, (resp) => {
-      if (!resp || !resp.ok) {
-        renderStatus({ exists: false });
-        return;
+      try {
+        if (!resp || !resp.ok) {
+          renderStatus({ exists: false });
+        } else {
+          const { exists, html_file } = resp.data || {};
+          renderStatus({ exists: !!exists, html_file });
+        }
+      } finally {
+        setLoading(false);
       }
-      const { exists, html_file } = resp.data || {};
-      renderStatus({ exists: !!exists, html_file });
     });
   }
 
@@ -148,9 +187,14 @@
   }
 
   async function postSubmission(payload) {
+    setLoading(true, 'Uploading…');
     chrome.runtime.sendMessage({ type: "LC2GH_SUBMIT", payload }, (resp) => {
       console.log("[LC2GH] submit via background:", resp);
+      if (!resp?.ok) {
+        statusSpan.textContent = `LC2GH: Upload failed${resp?.status ? ` (HTTP ${resp.status})` : ''}`;
+      }
       try { queryStatusForCurrentSlug(); } catch {}
+      setLoading(false);
     });
   }
 
