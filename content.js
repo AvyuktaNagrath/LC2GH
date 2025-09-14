@@ -18,6 +18,9 @@
   let linkEl = null;
   let submitBtn = null;
 
+  // Track current status of this slug so we can switch button behavior
+  let currentExists = false;
+
   function getSlugFromPath() {
     const m = location.pathname.match(/problems\/([^/]+)/i);
     return m ? m[1] : "";
@@ -61,7 +64,7 @@
     linkEl.style.display = 'none';
     linkEl.textContent = 'View on GitHub';
 
-    // New: Manual submit button
+    // Manual submit/replace button (label set by renderStatus)
     submitBtn = document.createElement('button');
     submitBtn.textContent = 'Submit to GitHub';
     Object.assign(submitBtn.style, {
@@ -70,15 +73,26 @@
       cursor: 'pointer'
     });
     submitBtn.addEventListener('click', () => {
+      // Accepted warning (both submit and replace)
       if (!hasAcceptedResult()) {
-        const ok = window.confirm(
+        const okAccepted = window.confirm(
           "This page doesn’t show an Accepted result.\n" +
-          "Submit to GitHub anyway?"
+          "Continue anyway?"
         );
-        if (!ok) return;
-        // mark one-shot bypass of Accepted gate
-        window.__LC2GH_bypassOnce = true;
+        if (!okAccepted) return;
+        window.__LC2GH_bypassOnce = true; // one-shot bypass
       }
+
+      // Replace-specific confirm if already exists
+      if (currentExists) {
+        const okReplace = window.confirm(
+          "A submission for this problem already exists in your repo.\n" +
+          "This will commit a new version (replace). Continue?"
+        );
+        if (!okReplace) return;
+        window.__LC2GH_forceReplaceOnce = true; // one-shot bypass of dedupe
+      }
+
       // Pull editor payload
       window.postMessage({ __LC_PULL_EDITOR__: true, __LC_MANUAL__: true }, '*');
     });
@@ -93,8 +107,11 @@
 
   function renderStatus({ exists, html_file }) {
     ensureToast();
+    currentExists = !!exists;
+
     if (exists) {
       statusSpan.textContent = 'LC2GH: Already submitted';
+      submitBtn.textContent = 'Replace on GitHub';
       if (html_file) {
         linkEl.style.display = '';
         linkEl.href = html_file;
@@ -103,6 +120,7 @@
       }
     } else {
       statusSpan.textContent = 'LC2GH: Not submitted yet';
+      submitBtn.textContent = 'Submit to GitHub';
       linkEl.style.display = 'none';
     }
   }
@@ -138,8 +156,8 @@
 
   async function handlePayload(p) {
     // Gate only if user didn't confirm the bypass and no Accepted visible.
-    const bypass = !!window.__LC2GH_bypassOnce;
-    if (!bypass && !hasAcceptedResult()) {
+    const bypassAccepted = !!window.__LC2GH_bypassOnce;
+    if (!bypassAccepted && !hasAcceptedResult()) {
       log("skip submit: no accepted result panel on this page");
       return;
     }
@@ -167,9 +185,12 @@
       code: p.code || ''
     };
 
+    // Dedupe unless user explicitly chose "replace" this time
+    const forceReplaceThisClick = !!window.__LC2GH_forceReplaceOnce;
     const key = await sha256Hex(`${payload.slug}|${payload.language}|${payload.code}`);
-    if (seenKeys.has(key)) { log("duplicate; skipping"); return; }
+    if (!forceReplaceThisClick && seenKeys.has(key)) { log("duplicate; skipping"); return; }
     seenKeys.add(key);
+    window.__LC2GH_forceReplaceOnce = false; // consume one-shot flag
 
     // cache in extension storage (optional, unchanged)
     chrome.storage.local.get({ snapshots: [] }, ({ snapshots }) => {
