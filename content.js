@@ -12,19 +12,25 @@
 
   const ACCEPTED_RE = /(^|\b)Accepted(\b|$)/i;
 
-    // ---- Toast UI state (minimal, no CSS files) ----
+  // ---- Toast UI state (minimal, no CSS files) ----
   let toastEl = null;
-  let replaceBtn = null;
   let statusSpan = null;
   let linkEl = null;
-  let acceptedNow = false;
-  let lastSlug = "";
-  let forceReplace = false; // NEW: bypass local dedupe for manual replace
-
+  let submitBtn = null;
 
   function getSlugFromPath() {
     const m = location.pathname.match(/problems\/([^/]+)/i);
     return m ? m[1] : "";
+  }
+
+  // Simple Accepted detector (used only for warning copy)
+  function hasAcceptedResult() {
+    const t = document.body?.innerText || '';
+    return (
+      ACCEPTED_RE.test(t) &&
+      /Runtime:\s*[0-9.]+\s*ms/i.test(t) &&
+      /Memory:\s*[0-9.]+\s*MB/i.test(t)
+    );
   }
 
   function ensureToast() {
@@ -34,7 +40,7 @@
       position: 'fixed', right: '16px', bottom: '16px', zIndex: 999999,
       background: 'rgba(20,20,20,0.92)', color: '#fff', padding: '10px 12px',
       borderRadius: '8px', fontSize: '12px', lineHeight: '1.4',
-      boxShadow: '0 6px 18px rgba(0,0,0,0.3)', maxWidth: '320px',
+      boxShadow: '0 6px 18px rgba(0,0,0,0.3)', maxWidth: '340px',
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif'
     });
 
@@ -55,24 +61,31 @@
     linkEl.style.display = 'none';
     linkEl.textContent = 'View on GitHub';
 
-    replaceBtn = document.createElement('button');
-    replaceBtn.textContent = 'Replace submission';
-    Object.assign(replaceBtn.style, {
+    // New: Manual submit button
+    submitBtn = document.createElement('button');
+    submitBtn.textContent = 'Submit to GitHub';
+    Object.assign(submitBtn.style, {
       marginLeft: 'auto', padding: '4px 8px', borderRadius: '6px',
-      border: '1px solid #444', background: '#2a2a2a', color: '#fff',
+      border: '1px solid #444', background: '#3b82f6', color: '#fff',
       cursor: 'pointer'
     });
-    replaceBtn.disabled = true;
-    replaceBtn.addEventListener('click', () => {
-      if (!acceptedNow) return; // gate by current Accepted state
-      forceReplace = true;      // NEW: allow re-submit even if code unchanged
-      window.postMessage({ __LC_PULL_EDITOR__: true }, '*');
+    submitBtn.addEventListener('click', () => {
+      if (!hasAcceptedResult()) {
+        const ok = window.confirm(
+          "This page doesn’t show an Accepted result.\n" +
+          "Submit to GitHub anyway?"
+        );
+        if (!ok) return;
+        // mark one-shot bypass of Accepted gate
+        window.__LC2GH_bypassOnce = true;
+      }
+      // Pull editor payload
+      window.postMessage({ __LC_PULL_EDITOR__: true, __LC_MANUAL__: true }, '*');
     });
-
 
     row.appendChild(statusSpan);
     row.appendChild(linkEl);
-    row.appendChild(replaceBtn);
+    row.appendChild(submitBtn);
     toastEl.appendChild(row);
     (document.body || document.documentElement).appendChild(toastEl);
     return toastEl;
@@ -94,18 +107,9 @@
     }
   }
 
-  function setReplaceEnabled(on) {
-    ensureToast();
-    acceptedNow = !!on;
-    replaceBtn.disabled = !acceptedNow;
-    replaceBtn.style.opacity = acceptedNow ? '1' : '0.6';
-    replaceBtn.style.cursor = acceptedNow ? 'pointer' : 'not-allowed';
-  }
-
   function queryStatusForCurrentSlug() {
     const slug = getSlugFromPath();
     if (!slug) return;
-    lastSlug = slug;
     chrome.runtime.sendMessage({ type: "LC2GH_STATUS", slug }, (resp) => {
       if (!resp || !resp.ok) {
         renderStatus({ exists: false });
@@ -128,14 +132,19 @@
   async function postSubmission(payload) {
     chrome.runtime.sendMessage({ type: "LC2GH_SUBMIT", payload }, (resp) => {
       console.log("[LC2GH] submit via background:", resp);
-      // NEW: refresh toast status after submit (auto or replace)
       try { queryStatusForCurrentSlug(); } catch {}
     });
   }
 
-
-
   async function handlePayload(p) {
+    // Gate only if user didn't confirm the bypass and no Accepted visible.
+    const bypass = !!window.__LC2GH_bypassOnce;
+    if (!bypass && !hasAcceptedResult()) {
+      log("skip submit: no accepted result panel on this page");
+      return;
+    }
+    window.__LC2GH_bypassOnce = false; // consume one-shot bypass
+
     const text = document.body?.innerText || '';
     const runtimeMatch = text.match(/Runtime:\s*([0-9.]+\s*ms)/i);
     const memoryMatch  = text.match(/Memory:\s*([0-9.]+\s*MB)/i);
@@ -159,10 +168,8 @@
     };
 
     const key = await sha256Hex(`${payload.slug}|${payload.language}|${payload.code}`);
-    if (!forceReplace && seenKeys.has(key)) { log("duplicate; skipping"); return; } // CHANGED
+    if (seenKeys.has(key)) { log("duplicate; skipping"); return; }
     seenKeys.add(key);
-    forceReplace = false; // NEW: reset after use
-
 
     // cache in extension storage (optional, unchanged)
     chrome.storage.local.get({ snapshots: [] }, ({ snapshots }) => {
@@ -170,45 +177,15 @@
       chrome.storage.local.set({ snapshots: snapshots.slice(0, 1000) });
     });
 
-    // 👉 send to background to perform the downloads
+    // Local debug downloads (unchanged)
     chrome.runtime.sendMessage({ type: "LC2GH_DOWNLOAD", payload }, (resp) => {
       log("background responded:", resp);
     });
 
     postSubmission(payload);
-
   }
 
-  // Detect Accepted
-  const mo = new MutationObserver(() => {
-      if (ACCEPTED_RE.test(document.body?.innerText || '')) {
-        setReplaceEnabled(true); // NEW: enable "Replace" when Accepted is visible
-        log("Accepted detected");
-        window.postMessage({ __LC_PULL_EDITOR__: true }, '*');
-      } else {
-        setReplaceEnabled(false); // NEW: disable when not Accepted
-      }
-
-  });
-  mo.observe(document.documentElement, { childList: true, subtree: true });
-
-  // Fallback poll
-  setInterval(() => {
-    if (ACCEPTED_RE.test(document.body?.innerText || '')) {
-      log("Accepted detected (poll)");
-      window.postMessage({ __LC_PULL_EDITOR__: true }, '*');
-    }
-  }, 2000);
-
-  // Manual hotkey: Alt+J to force capture
-  window.addEventListener('keydown', (e) => {
-    if (e.altKey && e.key.toLowerCase() === 'j') {
-      log("Manual capture (Alt+J)");
-      window.postMessage({ __LC_PULL_EDITOR__: true }, '*');
-    }
-  });
-
-  // Receive editor payload
+  // Receive editor payload (manual-only path)
   window.addEventListener('message', (e) => {
     if (e.source !== window) return;
     if (e.data?.__LC_PAYLOAD__) {
@@ -217,7 +194,7 @@
     }
   });
 
-    // Initial toast + status
+  // Initial toast + status
   ensureToast();
   queryStatusForCurrentSlug();
 
@@ -226,9 +203,7 @@
   setInterval(() => {
     if (location.href !== lastHref) {
       lastHref = location.href;
-      setReplaceEnabled(false); // reset on navigation until Accepted shows again
       queryStatusForCurrentSlug();
     }
   }, 800);
-
 })();
